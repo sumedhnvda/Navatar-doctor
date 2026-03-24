@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { LogOut, Monitor, Settings, Mic, MicOff, Video, VideoOff } from 'lucide-react';
 import { useAuth } from "@/components/AuthProvider";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 function CallUI() {
   const { doctorProfile, user } = useAuth();
@@ -22,11 +21,6 @@ function CallUI() {
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
-
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
-  const [feedbackText, setFeedbackText] = useState('');
-  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
-  const SKIP_FEEDBACK_KEY = 'skipFeedbackUntil';
 
   const [localVideoTrack, setLocalVideoTrack] = useState(null);
   const [localAudioTrack, setLocalAudioTrack] = useState(null);
@@ -116,47 +110,21 @@ function CallUI() {
     await releaseBot();
     await completeBooking();
 
+    const SKIP_FEEDBACK_KEY = 'skipFeedbackUntil';
     const skipUntil = localStorage.getItem(SKIP_FEEDBACK_KEY);
     if (skipUntil && parseInt(skipUntil, 10) > Date.now()) {
       router.push('/dashboard');
     } else {
-      setShowFeedbackModal(true);
+      router.push(`/dashboard?showFeedback=true&completedBookingId=${bookingId || ''}&completedBotId=${botId || ''}`);
     }
-  }, [stopAllTracks, releaseBot, completeBooking, router]);
-
-  // ─── Feedback Handlers ───
-  const handleFeedbackSubmit = async () => {
-    if (!feedbackText.trim()) return handleFeedbackSkip();
-    setIsSubmittingFeedback(true);
-    try {
-      await addDoc(collection(db, "feedbacks"), {
-        doctorId: doctorProfile?.id || user?.uid || "unknown",
-        doctorName: doctorProfile?.name || user?.email || "Doctor",
-        hospitalId: doctorProfile?.hospitalId || "unknown",
-        bookingId: bookingId || null,
-        botId: botId || null,
-        feedback: feedbackText,
-        createdAt: serverTimestamp()
-      });
-    } catch (err) {
-      console.error("Error submitting feedback:", err);
-    }
-    router.push('/dashboard');
-  };
-
-  const handleFeedbackSkip = () => {
-    router.push('/dashboard');
-  };
-
-  const handleFeedbackSkip7Days = () => {
-    localStorage.setItem(SKIP_FEEDBACK_KEY, Date.now() + 7 * 24 * 60 * 60 * 1000);
-    router.push('/dashboard');
-  };
+  }, [stopAllTracks, releaseBot, completeBooking, router, bookingId, botId]);
 
   // ─── Agora Connection ───
   useEffect(() => {
     if (!botId) return;
     const channelName = botId;
+
+    let isMounted = true;
 
     const initAgora = async () => {
       const AgoraRTC = (await import('agora-rtc-sdk-ng')).default;
@@ -164,7 +132,9 @@ function CallUI() {
       clientRef.current = client;
 
       client.on("user-published", async (user, mediaType) => {
+        if (!isMounted) return;
         await client.subscribe(user, mediaType);
+        if (!isMounted) return;
         setRemoteUsers(prev => ({ ...prev, [user.uid]: user }));
         if (mediaType === "video") {
           setTimeout(() => {
@@ -176,32 +146,49 @@ function CallUI() {
       });
 
       client.on("user-left", (user) => {
+        if (!isMounted) return;
         setRemoteUsers(prev => { const u = { ...prev }; delete u[user.uid]; return u; });
       });
 
       try {
         const response = await fetch(`/api/agora/token?channelName=${channelName}&uid=0`);
         const data = await response.json();
+        if (!isMounted) { client.leave().catch(() => {}); return; }
         if (data.error) throw new Error(data.error);
 
         await client.join(data.appId, channelName, data.token, null);
+        if (!isMounted) { client.leave().catch(() => {}); return; }
         setConnectionStatus(`Connected (${channelName})`);
 
         const [audioTrack, videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+        if (!isMounted) { 
+          audioTrack.stop(); audioTrack.close(); 
+          videoTrack.stop(); videoTrack.close(); 
+          client.leave().catch(() => {}); 
+          return; 
+        }
         localTracksRef.current = { audio: audioTrack, video: videoTrack };
         setLocalAudioTrack(audioTrack);
         setLocalVideoTrack(videoTrack);
         await client.publish([audioTrack, videoTrack]);
         if (localVideoRef.current) videoTrack.play(localVideoRef.current);
       } catch (error) {
-        console.error("Agora Error:", error);
-        setConnectionStatus("Connection Failed");
+        if (isMounted) {
+          console.error("Agora Error:", error);
+          const isPermissionError = 
+            error.code === 'PERMISSION_DENIED' || 
+            error.message?.includes('NotAllowedError') ||
+            error.message?.includes('Permission');
+            
+          setConnectionStatus(isPermissionError ? "Permission Denied (Camera/Mic)" : "Connection Failed");
+        }
       }
     };
 
     initAgora();
 
     return () => {
+      isMounted = false;
       // Cleanup on unmount — stop tracks aggressively
       stopAllTracks();
       if (clientRef.current) {
@@ -369,44 +356,6 @@ function CallUI() {
           </Card>
         </div>
       </div>
-
-      <Dialog open={showFeedbackModal} onOpenChange={(open) => {
-        if (!open) handleFeedbackSkip();
-      }}>
-        <DialogContent className="sm:max-w-[500px] text-slate-800 bg-white">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">Session Ended</DialogTitle>
-            <DialogDescription className="text-slate-500">
-              How was your experience? Your feedback helps us improve the Navatar service.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-2">
-            <textarea
-              className="w-full min-h-[120px] p-3 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              placeholder="Tell us what went well or what could be better..."
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col sm:flex-row gap-3 pt-2 items-center justify-between">
-            <button
-              type="button"
-              className="text-sm text-slate-500 hover:text-slate-800 underline underline-offset-4"
-              onClick={handleFeedbackSkip7Days}
-            >
-              Don&apos;t show for next 7 days
-            </button>
-            <div className="flex gap-2 w-full sm:w-auto mt-2 sm:mt-0">
-              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={handleFeedbackSkip}>
-                Skip
-              </Button>
-              <Button type="button" className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white" disabled={isSubmittingFeedback} onClick={handleFeedbackSubmit}>
-                {isSubmittingFeedback ? "Saving..." : "Submit Feedback"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

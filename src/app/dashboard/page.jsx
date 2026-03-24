@@ -7,7 +7,7 @@ import { auth, db } from "@/lib/firebase";
 import { signOut } from "firebase/auth";
 import {
   collection, query, where, onSnapshot, doc, getDoc, addDoc, getDocs,
-  serverTimestamp, deleteDoc
+  serverTimestamp, deleteDoc, updateDoc
 } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   Monitor, Video, LogOut, Clock, User, Plus,
-  Calendar as CalendarIcon, CheckCircle2, Bot
+  Calendar as CalendarIcon, CheckCircle2, Bot, Star
 } from "lucide-react";
 import { format, isSameDay, parseISO, addDays } from "date-fns";
 import clsx from "clsx";
@@ -50,6 +50,28 @@ export default function DashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  const [visibleSessionLimit, setVisibleSessionLimit] = useState(5);
+
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [completedBookingId, setCompletedBookingId] = useState(null);
+  const [completedBotId, setCompletedBotId] = useState(null);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [rating, setRating] = useState(0); // 1 to 5 stars
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const SKIP_FEEDBACK_KEY = 'skipFeedbackUntil';
+
+  useEffect(() => {
+    // Check if we returned from a completed call that wants feedback overlay
+    const search = window.location.search;
+    if (search.includes("showFeedback=true")) {
+      const params = new URLSearchParams(search);
+      setShowFeedbackModal(true);
+      setCompletedBookingId(params.get("completedBookingId"));
+      setCompletedBotId(params.get("completedBotId"));
+      router.replace('/dashboard');
+    }
+  }, [router]);
 
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // midnight today
@@ -111,14 +133,26 @@ export default function DashboardPage() {
   const currentMinute = now.getMinutes();
 
   const handleCancelBooking = async (bookingId) => {
-    if (window.confirm("Are you sure you want to cancel this booking?")) {
+    if (window.confirm("Are you sure you want to cancel this booking? This action cannot be undone.")) {
       try {
-        await deleteDoc(doc(db, "bookings", bookingId));
+        await updateDoc(doc(db, "bookings", bookingId), {
+          status: "Cancelled"
+        });
       } catch (err) {
         console.error("Error canceling booking:", err);
         setErrorMsg("Failed to cancel booking.");
       }
     }
+  };
+
+  const formatTo12H = (time24) => {
+    if (!time24) return "";
+    const [h, m] = time24.split(':');
+    let hour = parseInt(h, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    hour = hour % 12;
+    hour = hour ? hour : 12; // its 12 if 0
+    return `${hour.toString().padStart(2, '0')}:${m} ${ampm}`;
   };
 
   const handleCreateBooking = async (e) => {
@@ -162,6 +196,7 @@ export default function DashboardPage() {
       b.botId === selectedBotForBooking &&
       b.date === dateStr &&
       b.status !== 'Completed' &&
+      b.status !== 'Cancelled' &&
       !(endTime <= b.start_time.slice(0, 5) || startTime >= b.end_time.slice(0, 5))
     );
     if (conflict) {
@@ -197,12 +232,23 @@ export default function DashboardPage() {
     }
   };
 
-  // Filter bookings for selected date
+  // Filter bookings for selected date, sort descending (latest time at top)
   const filteredBookings = useMemo(() => {
     return bookings
       .filter(b => b.date && date && isSameDay(parseISO(b.date), date))
-      .sort((a, b) => a.start_time.localeCompare(b.start_time));
+      .sort((a, b) => {
+        // First try to sort by createdAt descending so newly created booking is at top
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : Date.now();
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : Date.now();
+        if (timeA !== timeB) return timeB - timeA;
+        return b.start_time.localeCompare(a.start_time);
+      });
   }, [bookings, date]);
+
+  // Handle display limit of past + list items
+  const displayableBookings = useMemo(() => {
+    return filteredBookings.slice(0, visibleSessionLimit);
+  }, [filteredBookings, visibleSessionLimit]);
 
   // Join logic: doctor can join 10 min before start and until end
   const canJoin = (booking) => {
@@ -216,6 +262,7 @@ export default function DashboardPage() {
   };
 
   const isCompleted = (booking) => {
+    if (booking.status === 'Cancelled') return false; // Handle explicitly if needed, but lets just use logic
     const current = new Date();
     const [eH, eM] = booking.end_time.split(':').map(Number);
     const slotEnd = new Date(booking.date); slotEnd.setHours(eH, eM, 0, 0);
@@ -224,6 +271,43 @@ export default function DashboardPage() {
 
   const joinCall = (booking) => {
     router.push(`/call?botId=${booking.botId}&bookingId=${booking.id}`);
+  };
+
+  // ─── Feedback Handlers ───
+  const handleFeedbackSubmit = async () => {
+    if (rating === 0 && !feedbackText.trim()) return handleFeedbackSkip();
+    setIsSubmittingFeedback(true);
+    try {
+      await addDoc(collection(db, "feedbacks"), {
+        doctorId: doctorProfile?.id || user?.uid || "unknown",
+        doctorName: doctorProfile?.name || user?.email || "Doctor",
+        hospitalId: doctorProfile?.hospitalId || "unknown",
+        bookingId: completedBookingId || null,
+        botId: completedBotId || null,
+        feedback: feedbackText,
+        rating: rating,
+        createdAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.error("Error submitting feedback:", err);
+    }
+    setShowFeedbackModal(false);
+    setIsSubmittingFeedback(false);
+    setFeedbackText("");
+    setRating(0);
+  };
+
+  const handleFeedbackSkip = () => {
+    setShowFeedbackModal(false);
+    setFeedbackText("");
+    setRating(0);
+  };
+
+  const handleFeedbackSkip7Days = () => {
+    localStorage.setItem(SKIP_FEEDBACK_KEY, Date.now() + 7 * 24 * 60 * 60 * 1000);
+    setShowFeedbackModal(false);
+    setFeedbackText("");
+    setRating(0);
   };
 
   if (loading || !doctorProfile) return null;
@@ -291,8 +375,8 @@ export default function DashboardPage() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="flex-1 p-0">
-              <ScrollArea className="h-[calc(100vh-280px)] rounded-b-xl">
+            <CardContent className="flex-1 p-0 flex flex-col">
+              <ScrollArea className="flex-1 max-h-[calc(100vh-320px)] rounded-b-xl">
                 {filteredBookings.length === 0 ? (
                   <div className="flex flex-col items-center justify-center p-12 text-slate-400 h-full min-h-[400px]">
                     <Clock className="h-12 w-12 mb-4 opacity-20" />
@@ -301,7 +385,7 @@ export default function DashboardPage() {
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {filteredBookings.map((booking) => {
+                    {displayableBookings.map((booking) => {
                       const completed = isCompleted(booking);
                       const joinable = canJoin(booking);
                       const botData = liveNavatars.find(n => n.id === booking.botId);
@@ -313,9 +397,9 @@ export default function DashboardPage() {
                           joinable && isMyBooking ? "bg-blue-50/50" : ""
                         )}>
                           <div className="flex items-start gap-4">
-                            <div className="min-w-[100px] text-center pt-1">
-                              <p className="text-lg font-bold text-slate-800">{booking.start_time.slice(0, 5)}</p>
-                              <p className="text-xs text-slate-500">to {booking.end_time.slice(0, 5)}</p>
+                            <div className="min-w-[120px] text-center pt-1">
+                              <p className="text-lg font-bold text-slate-800">{formatTo12H(booking.start_time)}</p>
+                              <p className="text-xs text-slate-500">to {formatTo12H(booking.end_time)}</p>
                             </div>
                             <Separator orientation="vertical" className="h-12 hidden sm:block bg-slate-200" />
                             <div>
@@ -329,14 +413,14 @@ export default function DashboardPage() {
                               <p className="text-sm text-slate-500 mt-1 flex items-center gap-2">
                                 <span className={clsx(
                                   "inline-block w-2 h-2 rounded-full",
-                                  completed ? "bg-slate-300" : joinable ? "bg-green-500 animate-pulse" : "bg-blue-400"
+                                  booking.status === 'Cancelled' ? "bg-red-500" : completed ? "bg-slate-300" : joinable ? "bg-green-500 animate-pulse" : "bg-blue-400"
                                 )} />
-                                {completed ? "Completed" : joinable ? "Active Now" : "Scheduled"}
+                                {booking.status === 'Cancelled' ? "Cancelled" : completed ? "Completed" : joinable ? "Active Now" : "Scheduled"}
                               </p>
                             </div>
                           </div>
                           <div className="sm:pl-4 mt-2 sm:mt-0 flex flex-col gap-2 w-full sm:w-auto">
-                            {!completed && isMyBooking && (
+                            {!completed && booking.status !== 'Cancelled' && isMyBooking && (
                               <Button
                                 onClick={() => joinCall(booking)}
                                 disabled={!joinable}
@@ -352,7 +436,7 @@ export default function DashboardPage() {
                                 Join Call
                               </Button>
                             )}
-                            {!completed && isMyBooking && (
+                            {!completed && booking.status !== 'Cancelled' && isMyBooking && (
                               <Button
                                 onClick={() => handleCancelBooking(booking.id)}
                                 variant="outline"
@@ -361,7 +445,7 @@ export default function DashboardPage() {
                                 Cancel Session
                               </Button>
                             )}
-                            {!joinable && !completed && isMyBooking && (
+                            {!joinable && !completed && booking.status !== 'Cancelled' && isMyBooking && (
                               <span className="text-xs text-slate-400 text-center">Opens 10m before start</span>
                             )}
                           </div>
@@ -371,6 +455,18 @@ export default function DashboardPage() {
                   </div>
                 )}
               </ScrollArea>
+              {filteredBookings.length > visibleSessionLimit && (
+                <div className="p-4 border-t border-slate-100 flex justify-center bg-white">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setVisibleSessionLimit(prev => prev + 5)}
+                    className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                  >
+                    Load More
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -408,11 +504,31 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-1">
                   <input type="number" min="1" max="12"
                     className="h-10 w-14 rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    value={startH12} onChange={(e) => setStartH12(e.target.value)} placeholder="09" />
+                    value={startH12} 
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      if (!val) setStartH12("");
+                      else if (parseInt(val, 10) <= 12) setStartH12(val.slice(-2));
+                    }} 
+                    onBlur={() => {
+                      if (!startH12) setStartH12("09");
+                      else setStartH12(startH12.padStart(2, '0'));
+                    }}
+                    placeholder="09" />
                   <span className="text-slate-400 font-bold text-lg">:</span>
                   <input type="number" min="0" max="59"
                     className="h-10 w-14 rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    value={startM} onChange={(e) => setStartM(e.target.value)} placeholder="00" />
+                    value={startM} 
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      if (!val) setStartM("");
+                      else if (parseInt(val, 10) <= 59) setStartM(val.slice(-2));
+                    }} 
+                    onBlur={() => {
+                      if (!startM) setStartM("00");
+                      else setStartM(startM.padStart(2, '0'));
+                    }}
+                    placeholder="00" />
                 </div>
                 <select className="h-10 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-600"
                   value={startPeriod} onChange={(e) => setStartPeriod(e.target.value)}>
@@ -429,11 +545,31 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-1">
                   <input type="number" min="1" max="12"
                     className="h-10 w-14 rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    value={endH12} onChange={(e) => setEndH12(e.target.value)} placeholder="09" />
+                    value={endH12} 
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      if (!val) setEndH12("");
+                      else if (parseInt(val, 10) <= 12) setEndH12(val.slice(-2));
+                    }}
+                    onBlur={() => {
+                      if (!endH12) setEndH12("09");
+                      else setEndH12(endH12.padStart(2, '0'));
+                    }}
+                    placeholder="09" />
                   <span className="text-slate-400 font-bold text-lg">:</span>
                   <input type="number" min="0" max="59"
                     className="h-10 w-14 rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    value={endM} onChange={(e) => setEndM(e.target.value)} placeholder="30" />
+                    value={endM} 
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      if (!val) setEndM("");
+                      else if (parseInt(val, 10) <= 59) setEndM(val.slice(-2));
+                    }}
+                    onBlur={() => {
+                      if (!endM) setEndM("30");
+                      else setEndM(endM.padStart(2, '0'));
+                    }}
+                    placeholder="30" />
                 </div>
                 <select className="h-10 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-600"
                   value={endPeriod} onChange={(e) => setEndPeriod(e.target.value)}>
@@ -457,6 +593,65 @@ export default function DashboardPage() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Post-Call Feedback Dialog */}
+      <Dialog open={showFeedbackModal} onOpenChange={(open) => {
+        if (!open) handleFeedbackSkip();
+      }}>
+        <DialogContent className="sm:max-w-[500px] text-slate-800 bg-white">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">Session Ended</DialogTitle>
+            <DialogDescription className="text-slate-500">
+              How was your experience? Your feedback helps us improve the Navatar service.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="py-2 flex flex-col gap-3">
+            <div className="flex items-center gap-1 justify-center py-2">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => setRating(star)}
+                  className="focus:outline-none transition-transform hover:scale-110"
+                >
+                  <Star
+                    className={clsx(
+                      "h-8 w-8",
+                      star <= rating ? "fill-amber-400 text-amber-400" : "text-slate-300 fill-none"
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              className="w-full min-h-[120px] p-3 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              placeholder="Tell us what went well or what could be better... (Optional)"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 pt-2 items-center justify-between">
+            <button
+              type="button"
+              className="text-sm text-slate-500 hover:text-slate-800 underline underline-offset-4"
+              onClick={handleFeedbackSkip7Days}
+            >
+              Don&apos;t show for next 7 days
+            </button>
+            <div className="flex gap-2 w-full sm:w-auto mt-2 sm:mt-0">
+              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={handleFeedbackSkip}>
+                Skip
+              </Button>
+              <Button type="button" className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white" disabled={isSubmittingFeedback} onClick={handleFeedbackSubmit}>
+                {isSubmittingFeedback ? "Saving..." : "Submit Feedback"}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
