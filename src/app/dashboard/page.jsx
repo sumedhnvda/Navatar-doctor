@@ -7,7 +7,7 @@ import { auth, db } from "@/lib/firebase";
 import { signOut } from "firebase/auth";
 import {
   collection, query, where, onSnapshot, doc, getDoc, addDoc, getDocs,
-  serverTimestamp
+  serverTimestamp, deleteDoc
 } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
@@ -109,6 +109,17 @@ export default function DashboardPage() {
   const isToday = date && isSameDay(date, now);
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
+
+  const handleCancelBooking = async (bookingId) => {
+    if (window.confirm("Are you sure you want to cancel this booking?")) {
+      try {
+        await deleteDoc(doc(db, "bookings", bookingId));
+      } catch (err) {
+        console.error("Error canceling booking:", err);
+        setErrorMsg("Failed to cancel booking.");
+      }
+    }
+  };
 
   const handleCreateBooking = async (e) => {
     e.preventDefault();
@@ -339,6 +350,15 @@ export default function DashboardPage() {
                               >
                                 <Video className="h-4 w-4 mr-2" />
                                 Join Call
+                              </Button>
+                            )}
+                            {!completed && isMyBooking && (
+                              <Button
+                                onClick={() => handleCancelBooking(booking.id)}
+                                variant="outline"
+                                className="w-full sm:w-auto text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
+                              >
+                                Cancel Session
                               </Button>
                             )}
                             {!joinable && !completed && isMyBooking && (
