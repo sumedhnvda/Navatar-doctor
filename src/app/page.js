@@ -64,7 +64,7 @@ export default function LoginPage() {
     }
   };
 
-  if (loading) {
+  if (loading || user) {
     return (
       <div className="flex bg-blue-50 items-center justify-center min-vh-100 h-screen">
           <div className="animate-pulse text-blue-600 font-semibold text-lg flex items-center gap-2">

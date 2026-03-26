@@ -31,6 +31,12 @@ export default function DashboardPage() {
   const router = useRouter();
   const [date, setDate] = useState(new Date());
 
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/");
+    }
+  }, [loading, user, router]);
+
   // Hospital data
   const [expectedBotIds, setExpectedBotIds] = useState([]);
   const [hospitalName, setHospitalName] = useState("");
@@ -159,7 +165,7 @@ export default function DashboardPage() {
     e.preventDefault();
     setErrorMsg(""); setSuccessMsg(""); setIsSubmitting(true);
 
-    if (!selectedBotForBooking || !date || !user) {
+    if (!selectedBotForBooking || !date || !user || !doctorProfile || doctorProfile.status !== 'active') {
       setErrorMsg("Please select a bot and date before booking."); setIsSubmitting(false); return;
     }
 
@@ -310,7 +316,15 @@ export default function DashboardPage() {
     setRating(0);
   };
 
-  if (loading || !doctorProfile) return null;
+  if (loading || !doctorProfile) {
+    return (
+      <div className="flex bg-slate-50 items-center justify-center min-vh-100 h-screen w-full">
+        <div className="animate-pulse text-blue-600 font-semibold text-lg flex items-center gap-2">
+          <Monitor className="h-6 w-6 animate-bounce" /> Loading Navatar Dashboard...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">

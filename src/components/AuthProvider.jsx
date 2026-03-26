@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
 const AuthContext = createContext({
@@ -19,50 +19,61 @@ export const AuthProvider = ({ children }) => {
   const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setLoading(true);
-      setAuthError(null);
+    let unsubscribeProfile = null;
 
-      if (firebaseUser) {
-        try {
-          // Verify doctor in DB
-          const q = query(collection(db, "doctors"), where("email", "==", firebaseUser.email));
-          const querySnapshot = await getDocs(q);
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      // Clear previous profile listener if any
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
 
-          if (!querySnapshot.empty) {
-            const docSnap = querySnapshot.docs[0];
-            const data = docSnap.data();
-            
-            if (data.status === 'active') {
-              setUser(firebaseUser);
-              setDoctorProfile({ id: docSnap.id, ...data });
-            } else {
-              setAuthError("Your doctor account is not active.");
-              await signOut(auth);
-              setUser(null);
-              setDoctorProfile(null);
-            }
-          } else {
-            setAuthError("Access denied. You are not registered as a doctor for any hospital.");
-            await signOut(auth);
-            setUser(null);
-            setDoctorProfile(null);
-          }
-        } catch (error) {
-          console.error("Error fetching doctor profile:", error);
-          setAuthError("An error occurred during verification.");
-          await signOut(auth);
-          setUser(null);
-          setDoctorProfile(null);
-        }
-      } else {
+      if (!firebaseUser) {
         setUser(null);
         setDoctorProfile(null);
+        setLoading(false);
+        return;
       }
-      setLoading(false);
+
+      // User exists, setup real-time profile listener
+      setLoading(true);
+      const q = query(
+        collection(db, "doctors"), 
+        where("email", "==", firebaseUser.email)
+      );
+
+      unsubscribeProfile = onSnapshot(q, (snapshot) => {
+        if (snapshot.empty) {
+          setAuthError("Access denied. You are not registered as a doctor.");
+          signOut(auth);
+          setLoading(false);
+          return;
+        }
+
+        const docSnap = snapshot.docs[0];
+        const data = docSnap.data();
+
+        if (data.status === 'active') {
+          setUser(firebaseUser);
+          setDoctorProfile({ id: docSnap.id, ...data });
+          setAuthError(null);
+        } else {
+          setAuthError("Your doctor account is not active.");
+          signOut(auth);
+          setDoctorProfile(null);
+        }
+        setLoading(false);
+      }, (error) => {
+        console.error("Status sync error:", error);
+        setAuthError("Connection error. Please try again.");
+        setLoading(false);
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeProfile) unsubscribeProfile();
+    };
   }, []);
 
   return (

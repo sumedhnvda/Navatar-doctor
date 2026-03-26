@@ -10,11 +10,18 @@ import { LogOut, Monitor, Settings, Mic, MicOff, Video, VideoOff } from 'lucide-
 import { useAuth } from "@/components/AuthProvider";
 
 function CallUI() {
-  const { doctorProfile, user } = useAuth();
+  const { doctorProfile, user, loading } = useAuth();
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const botId = searchParams.get('botId');
   const bookingId = searchParams.get('bookingId');
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/");
+    }
+  }, [loading, user, router]);
 
   const [connectionStatus, setConnectionStatus] = useState('Ready (Bot Standby)');
   const [timeLeft, setTimeLeft] = useState('');
@@ -280,6 +287,16 @@ function CallUI() {
   };
 
   const handleJoystickEnd = () => { setJoystickPos({ x: 0, y: 0 }); sendCommand(0, 0); };
+
+  if (loading || !doctorProfile) {
+    return (
+      <div className="h-screen w-full bg-slate-950 text-white flex items-center justify-center">
+        <div className="animate-pulse text-blue-400 font-semibold text-lg flex items-center gap-2">
+          <Monitor className="h-6 w-6 animate-bounce" /> Loading Call Interface...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-full bg-slate-950 flex flex-col text-white">
