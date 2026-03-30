@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   Monitor, Video, LogOut, Clock, User, Plus,
-  Calendar as CalendarIcon, CheckCircle2, Bot, Star
+  Calendar as CalendarIcon, CheckCircle2, Bot, Star, Timer, History, Activity
 } from "lucide-react";
 import { format, isSameDay, parseISO, addDays } from "date-fns";
 import clsx from "clsx";
@@ -58,6 +58,87 @@ export default function DashboardPage() {
   const [successMsg, setSuccessMsg] = useState("");
 
   const [visibleSessionLimit, setVisibleSessionLimit] = useState(5);
+
+  const [totalPastBookings, setTotalPastBookings] = useState(0);
+  const [totalUpcomingBookings, setTotalUpcomingBookings] = useState(0);
+  const [totalBookingHours, setTotalBookingHours] = useState(0);
+  const [nextBooking, setNextBooking] = useState(null);
+  const [timeUntilNext, setTimeUntilNext] = useState("");
+
+  useEffect(() => {
+    let pastCount = 0;
+    let pastMins = 0;
+    let upcoming = null;
+    let closestTime = Infinity;
+    let upcomingCount = 0;
+
+    const nowTime = new Date().getTime();
+
+    bookings.forEach(b => {
+      if (b.doctorId === doctorProfile?.id && b.status !== 'Cancelled') {
+        const [sH, sM] = (b.start_time || "00:00").split(':').map(Number);
+        const [eH, eM] = (b.end_time || "00:00").split(':').map(Number);
+        
+        const slotStart = new Date(b.date);
+        if(!isNaN(slotStart.getTime())) {
+          slotStart.setHours(sH, sM, 0, 0);
+          const slotEnd = new Date(b.date);
+          slotEnd.setHours(eH, eM, 0, 0);
+          
+          if (nowTime >= slotEnd.getTime() || b.status === 'Completed') {
+            pastCount++;
+            pastMins += (eH * 60 + eM) - (sH * 60 + sM);
+          } else {
+            upcomingCount++;
+            const timeDiff = slotStart.getTime() - nowTime;
+            if (timeDiff > 0 && timeDiff < closestTime) {
+              closestTime = timeDiff;
+              upcoming = b;
+            }
+          }
+        }
+      }
+    });
+
+    setTotalPastBookings(pastCount);
+    setTotalUpcomingBookings(upcomingCount);
+    setTotalBookingHours((pastMins / 60).toFixed(1));
+    setNextBooking(upcoming);
+  }, [bookings, doctorProfile]);
+
+  useEffect(() => {
+    if (!nextBooking) {
+      setTimeUntilNext("");
+      return;
+    }
+
+    const updateCountdown = () => {
+      const [sH, sM] = nextBooking.start_time.split(':').map(Number);
+      const slotStart = new Date(nextBooking.date);
+      slotStart.setHours(sH, sM, 0, 0);
+
+      const diff = slotStart.getTime() - new Date().getTime();
+      if (diff <= 0) {
+        setTimeUntilNext("Starting soon");
+        return;
+      }
+
+      const d = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const h = Math.floor((diff / (1000 * 60 * 60)) % 24);
+      const m = Math.floor((diff / 1000 / 60) % 60);
+      const s = Math.floor((diff / 1000) % 60);
+
+      let timerStr = "";
+      if (d > 0) timerStr += `${d}d `;
+      if (h > 0 || d > 0) timerStr += `${h}h `;
+      timerStr += `${m}m ${s}s`;
+      setTimeUntilNext(timerStr);
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [nextBooking]);
 
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [completedBookingId, setCompletedBookingId] = useState(null);
@@ -329,11 +410,36 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
-        <div className="flex items-center gap-2 text-blue-700">
-          <Monitor className="h-6 w-6" />
-          <span className="font-bold text-xl tracking-tight">Navatar Dashboard</span>
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 text-blue-700">
+            <Monitor className="h-6 w-6" />
+            <span className="font-bold text-xl tracking-tight hidden sm:inline-block">Navatar</span>
+          </div>
+
+          <div className="hidden lg:flex items-center gap-6 pl-6 border-l border-slate-200">
+            <div className="flex items-center gap-2 text-sm">
+              <Activity className="h-4 w-4 text-green-600" /> 
+              <span className="text-slate-600 font-medium">Total Hrs Booked:</span> 
+              <span className="font-bold text-slate-900">{totalBookingHours} hr</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <CalendarIcon className="h-4 w-4 text-blue-600" />
+              <span className="text-slate-600 font-medium">Upcoming Sessions:</span>
+              <span className="font-bold text-slate-900">{totalUpcomingBookings}</span>
+            </div>
+            {nextBooking && (
+              <div className="flex items-center gap-2 text-sm">
+                <Timer className="h-4 w-4 text-amber-500" />
+                <span className="text-slate-600 font-medium">Next Session In:</span>
+                <span className="font-bold text-slate-900">{timeUntilNext}</span>
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-4">
+          <Button variant="outline" size="sm" onClick={() => router.push('/history')} className="flex text-blue-700 border-blue-200 bg-blue-50 hover:bg-blue-100 mr-2 sm:mr-0">
+            <History className="h-4 w-4 sm:mr-2" /> <span className="hidden sm:inline">History</span>
+          </Button>
           <div className="text-sm font-medium text-slate-600 hidden md:flex items-center gap-2">
             <User className="h-4 w-4" /> {doctorProfile.name || user?.email} ({hospitalName})
           </div>
@@ -344,6 +450,25 @@ export default function DashboardPage() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Next Session Card */}
+        {nextBooking && (
+          <div className="lg:col-span-12">
+            <Card className="border-slate-200 shadow-sm border-l-4 border-l-amber-500 flex flex-col justify-between">
+              <CardHeader className="p-4 pb-2">
+                <CardDescription className="text-slate-500 font-semibold flex items-center gap-2 mb-1">
+                  <Timer className="h-4 w-4" /> Next Upcoming Session
+                </CardDescription>
+                <CardTitle className="text-xl font-bold text-slate-800 mt-1 flex items-center gap-3">
+                  <span className="text-amber-500 animate-pulse">{timeUntilNext}</span>
+                </CardTitle>
+              </CardHeader>
+              <div className="px-4 pb-4 pt-0 text-sm text-slate-500 font-medium whitespace-nowrap overflow-hidden text-ellipsis">
+                {format(new Date(nextBooking.date), "MMM do")} at {formatTo12H(nextBooking.start_time)} with {liveNavatars.find(n => n.id === nextBooking.botId)?.name || nextBooking.botId}
+              </div>
+            </Card>
+          </div>
+        )}
+
         {/* Calendar Section */}
         <div className="lg:col-span-4 space-y-6">
           <Card className="border-slate-200 shadow-sm">
@@ -550,6 +675,37 @@ export default function DashboardPage() {
                   <option value="PM">PM</option>
                 </select>
               </div>
+            </div>
+
+            {/* Presets */}
+            <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-lg border border-slate-100">
+               <Label className="text-slate-600 font-bold text-sm mb-1">Quick Add (Optional Preset)</Label>
+               <div className="flex items-center gap-2 flex-wrap">
+                 {[15, 20, 30].map(mins => (
+                   <Button key={mins} type="button" variant="outline" size="sm" className="h-8 shadow-sm bg-white hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200"
+                     onClick={() => {
+                        let h = parseInt(startH12, 10);
+                        if (startPeriod === "PM" && h !== 12) h += 12;
+                        if (startPeriod === "AM" && h === 12) h = 0;
+                        let m = parseInt(startM, 10);
+                        
+                        let totalMins = h * 60 + m + mins;
+                        let newH = Math.floor(totalMins / 60) % 24;
+                        let newM = totalMins % 60;
+                        
+                        let newPeriod = newH >= 12 ? "PM" : "AM";
+                        let newH12 = newH % 12 || 12;
+                        
+                        setEndH12(newH12.toString().padStart(2, '0'));
+                        setEndM(newM.toString().padStart(2, '0'));
+                        setEndPeriod(newPeriod);
+                     }}
+                   >
+                     +{mins} min
+                   </Button>
+                 ))}
+                 <span className="text-xs text-slate-400 font-medium ml-2">Sets end time automatically</span>
+               </div>
             </div>
 
             {/* End Time */}
