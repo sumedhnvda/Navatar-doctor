@@ -119,7 +119,7 @@ export default function DashboardPage() {
 
       const diff = slotStart.getTime() - new Date().getTime();
       if (diff <= 0) {
-        setTimeUntilNext("Starting soon");
+        setTimeUntilNext("Join Call");
         return;
       }
 
@@ -450,25 +450,6 @@ export default function DashboardPage() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Next Session Card */}
-        {nextBooking && (
-          <div className="lg:col-span-12">
-            <Card className="border-slate-200 shadow-sm border-l-4 border-l-amber-500 flex flex-col justify-between">
-              <CardHeader className="p-4 pb-2">
-                <CardDescription className="text-slate-500 font-semibold flex items-center gap-2 mb-1">
-                  <Timer className="h-4 w-4" /> Next Upcoming Session
-                </CardDescription>
-                <CardTitle className="text-xl font-bold text-slate-800 mt-1 flex items-center gap-3">
-                  <span className="text-amber-500 animate-pulse">{timeUntilNext}</span>
-                </CardTitle>
-              </CardHeader>
-              <div className="px-4 pb-4 pt-0 text-sm text-slate-500 font-medium whitespace-nowrap overflow-hidden text-ellipsis">
-                {format(new Date(nextBooking.date), "MMM do")} at {formatTo12H(nextBooking.start_time)} with {liveNavatars.find(n => n.id === nextBooking.botId)?.name || nextBooking.botId}
-              </div>
-            </Card>
-          </div>
-        )}
-
         {/* Calendar Section */}
         <div className="lg:col-span-4 space-y-6">
           <Card className="border-slate-200 shadow-sm">
